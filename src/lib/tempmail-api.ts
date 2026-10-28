@@ -2,7 +2,7 @@ export const DOMAINS = [
   "aflii.club", "daboss.website", "gabrielgil.online", "rehbir.online", "solomusic.net", "technostarworld.com", "waverecords.xyz", "myuniversity.eu.cc", "officials.eu.cc", "pornstar.eu.cc", "teachers.eu.cc", "webdeveloper.eu.cc"
 ];
 
-const API_BASE = import.meta.env.VITE_API_URL || "";
+   const API_BASE = import.meta.env.VITE_API_URL || window.location.origin;
 
 export interface TempEmail {
   address: string;
