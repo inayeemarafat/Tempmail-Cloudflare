@@ -31,18 +31,29 @@ export interface EmailMessage {
   attachments?: EmailAttachment[];
 }
 
+// Cryptographically secure random integer in [0, max). The mailbox address is the only
+// "secret" protecting an inbox, so it must not come from Math.random().
+function secureRandomInt(max: number): number {
+  const limit = Math.floor(0x100000000 / max) * max; // rejection sampling, no modulo bias
+  const buf = new Uint32Array(1);
+  do {
+    crypto.getRandomValues(buf);
+  } while (buf[0] >= limit);
+  return buf[0] % max;
+}
+
 function generateRandomString(length: number): string {
   const chars = "abcdefghijklmnopqrstuvwxyz0123456789";
   let result = "";
   for (let i = 0; i < length; i++) {
-    result += chars.charAt(Math.floor(Math.random() * chars.length));
+    result += chars.charAt(secureRandomInt(chars.length));
   }
   return result;
 }
 
 export function generateTempEmail(): TempEmail {
   const username = generateRandomString(10);
-  const domain = DOMAINS[Math.floor(Math.random() * DOMAINS.length)];
+  const domain = DOMAINS[secureRandomInt(DOMAINS.length)];
   return { address: `${username}@${domain}`, domain };
 }
 
@@ -61,15 +72,18 @@ async function loadNames(): Promise<string[]> {
 
 export async function generateNaturalEmail(): Promise<TempEmail> {
   const names = await loadNames();
-  const name = names[Math.floor(Math.random() * names.length)].toLowerCase();
-  const digits = Math.floor(Math.random() * 900) + 100;
-  const username = `${name}${digits}`;
-  const domain = DOMAINS[Math.floor(Math.random() * DOMAINS.length)];
+  const name = names[secureRandomInt(names.length)].toLowerCase().replace(/[^a-z0-9]/g, "");
+  const digits = secureRandomInt(900) + 100;
+  // "name + 3 digits" alone is easy to enumerate, so add a random suffix.
+  const username = `${name}${digits}${generateRandomString(5)}`;
+  const domain = DOMAINS[secureRandomInt(DOMAINS.length)];
   return { address: `${username}@${domain}`, domain };
 }
 
 export function generateCustomEmail(username: string, domain: string): TempEmail {
-  return { address: `${username}@${domain}`, domain };
+  const safeDomain = DOMAINS.includes(domain) ? domain : DOMAINS[0];
+  const safeUser = username.trim().toLowerCase().replace(/[^a-z0-9._+-]/g, "").slice(0, 64);
+  return { address: `${safeUser}@${safeDomain}`, domain: safeDomain };
 }
 
 const STORAGE_KEY = "ahcmail_current_email";
@@ -84,7 +98,19 @@ export function loadEmailFromStorage(): { email: TempEmail; mode: string } | nul
   try {
     const raw = localStorage.getItem(STORAGE_KEY);
     const mode = localStorage.getItem(STORAGE_MODE_KEY) || "random";
-    if (raw) return { email: JSON.parse(raw), mode };
+    if (raw) {
+      const parsed = JSON.parse(raw);
+      // localStorage is user-editable: only accept a well-formed address on one of our domains.
+      if (
+        parsed &&
+        typeof parsed.address === "string" &&
+        typeof parsed.domain === "string" &&
+        DOMAINS.includes(parsed.domain) &&
+        parsed.address.endsWith(`@${parsed.domain}`)
+      ) {
+        return { email: { address: parsed.address, domain: parsed.domain }, mode };
+      }
+    }
   } catch {}
   return null;
 }
@@ -116,8 +142,8 @@ export async function fetchMessage(email: string, id: string): Promise<EmailMess
   }
 }
 
-export function getAttachmentUrl(emailId: string, attachmentId: string): string {
-  return `${API_BASE}/api/messages/${emailId}/attachments/${attachmentId}`;
+export function getAttachmentUrl(emailId: string, attachmentId: string, mailbox: string): string {
+  return `${API_BASE}/api/messages/${encodeURIComponent(emailId)}/attachments/${encodeURIComponent(attachmentId)}?email=${encodeURIComponent(mailbox)}`;
 }
 
 export async function deleteEmail(email: string): Promise<void> {

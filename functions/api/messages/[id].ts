@@ -1,38 +1,34 @@
+import { corsHeaders as buildCors, isUuid, jsonResponse, normalizeMailbox } from "../../../shared/security";
+
 interface Env {
   DB: D1Database;
-}
-
-const corsHeaders = {
-  "Access-Control-Allow-Origin": "*",
-  "Access-Control-Allow-Methods": "GET, OPTIONS",
-  "Access-Control-Allow-Headers": "Content-Type",
-};
-
-function json(data: unknown, status = 200) {
-  return new Response(JSON.stringify(data), {
-    status,
-    headers: { "Content-Type": "application/json", ...corsHeaders },
-  });
+  /** Optional, comma separated list of origins allowed to call this API (CORS). */
+  ALLOWED_ORIGINS?: string;
 }
 
 export const onRequest: PagesFunction<Env> = async (context) => {
   const { request, env, params } = context;
+  const cors = buildCors(request, env.ALLOWED_ORIGINS);
 
   if (request.method === "OPTIONS") {
-    return new Response(null, { headers: corsHeaders });
+    return new Response(null, { status: 204, headers: cors });
+  }
+  if (request.method !== "GET") {
+    return jsonResponse({ error: "Method not allowed" }, 405, cors);
   }
 
   const id = params.id as string;
   const url = new URL(request.url);
-  const email = url.searchParams.get("email");
+  const email = normalizeMailbox(url.searchParams.get("email"));
 
-  if (!email || !id) return json({ error: "Missing params" }, 400);
+  if (!email || !isUuid(id)) return jsonResponse({ error: "Invalid request" }, 400, cors);
 
+  // Ownership check: only return the message if it belongs to this mailbox.
   const result = await env.DB.prepare(
     "SELECT * FROM emails WHERE id = ? AND to_address = ?"
   ).bind(id, email).first();
 
-  if (!result) return json({ error: "Not found" }, 404);
+  if (!result) return jsonResponse({ error: "Not found" }, 404, cors);
 
   await env.DB.prepare(
     "UPDATE emails SET is_read = 1 WHERE id = ?"
@@ -43,5 +39,5 @@ export const onRequest: PagesFunction<Env> = async (context) => {
     "SELECT id, filename, content_type, size FROM attachments WHERE email_id = ?"
   ).bind(id).all();
 
-  return json({ ...result, attachments: attachments || [] });
+  return jsonResponse({ ...result, attachments: attachments || [] }, 200, cors);
 };

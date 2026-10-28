@@ -284,7 +284,7 @@ const Admin = () => {
                 <iframe
                   title="Email content"
                   sandbox="allow-popups allow-popups-to-escape-sandbox"
-                  srcDoc={detail.html_content}
+                  srcDoc={`<meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src data:; style-src 'unsafe-inline'; form-action 'none'">${detail.html_content}`}
                   className="w-full h-[28rem] rounded-xl border border-border bg-white"
                 />
               ) : (

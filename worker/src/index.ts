@@ -1,34 +1,37 @@
+import {
+  ALLOWED_DOMAINS,
+  LIMITS,
+  attachmentResponse,
+  corsHeaders as buildCorsHeaders,
+  isUuid,
+  jsonResponse,
+  normalizeMailbox,
+  toBase64,
+} from "../../shared/security";
+
 export interface Env {
   DB: D1Database;
+  /** Admin login secret. Set with: npx wrangler secret put ADMIN_PASSWORD (min 12 chars). */
   ADMIN_PASSWORD?: string;
+  /** Optional, comma separated list of origins allowed to call the public API (CORS). */
+  ALLOWED_ORIGINS?: string;
 }
 
-const ALLOWED_DOMAINS = ["aflii.club", "daboss.website", "gabrielgil.online", "rehbir.online", "solomusic.net", "technostarworld.com", "waverecords.xyz"];
+// ---------------------------------------------------------------------------
+// Admin auth (constant-time compare + per-IP lockout stored in D1)
+// ---------------------------------------------------------------------------
 
-const corsHeaders = {
-  "Access-Control-Allow-Origin": "*",
-  "Access-Control-Allow-Methods": "GET, POST, DELETE, OPTIONS",
-  "Access-Control-Allow-Headers": "Content-Type, Authorization",
-};
-
-function json(data: unknown, status = 200) {
-  return new Response(JSON.stringify(data), {
-    status,
-    headers: { "Content-Type": "application/json", ...corsHeaders },
-  });
-}
-
-
-function adminJson(data: unknown, status = 200) {
-  return new Response(JSON.stringify(data), {
-    status,
-    headers: { "Content-Type": "application/json", "Cache-Control": "no-store", ...corsHeaders },
-  });
-}
+const ADMIN_MIN_PASSWORD_LENGTH = 12;
+const ADMIN_MAX_FAILURES = 8;
+const ADMIN_WINDOW_MS = 15 * 60 * 1000;
 
 async function isAdmin(request: Request, env: Env): Promise<boolean> {
   const expected = env.ADMIN_PASSWORD;
   if (!expected) return false; // admin disabled until the secret is set
+  if (expected.length < ADMIN_MIN_PASSWORD_LENGTH) {
+    console.error(`ADMIN_PASSWORD is shorter than ${ADMIN_MIN_PASSWORD_LENGTH} characters; admin is disabled.`);
+    return false;
+  }
   const header = request.headers.get("Authorization") || "";
   const given = header.startsWith("Bearer ") ? header.slice(7) : "";
   const enc = new TextEncoder();
@@ -43,6 +46,33 @@ async function isAdmin(request: Request, env: Env): Promise<boolean> {
   return diff === 0;
 }
 
+let authTableReady = false;
+
+async function ensureAuthTable(env: Env) {
+  if (authTableReady) return;
+  await env.DB.batch([
+    env.DB.prepare("CREATE TABLE IF NOT EXISTS admin_failures (ip TEXT NOT NULL, at INTEGER NOT NULL)"),
+    env.DB.prepare("CREATE INDEX IF NOT EXISTS idx_admin_failures_ip_at ON admin_failures(ip, at)"),
+  ]);
+  authTableReady = true;
+}
+
+async function isLockedOut(env: Env, ip: string): Promise<boolean> {
+  await ensureAuthTable(env);
+  const row = await env.DB.prepare("SELECT COUNT(*) AS c FROM admin_failures WHERE ip = ? AND at > ?")
+    .bind(ip, Date.now() - ADMIN_WINDOW_MS)
+    .first<{ c: number }>();
+  return (row?.c ?? 0) >= ADMIN_MAX_FAILURES;
+}
+
+async function recordFailure(env: Env, ip: string) {
+  await env.DB.prepare("INSERT INTO admin_failures (ip, at) VALUES (?, ?)").bind(ip, Date.now()).run();
+}
+
+// ---------------------------------------------------------------------------
+// MIME / email parsing
+// ---------------------------------------------------------------------------
+
 function decodeQuotedPrintable(str: string): string {
   return str
     .replace(/=\r?\n/g, "")
@@ -54,11 +84,15 @@ function decodeQuotedPrintable(str: string): string {
 function decodeBase64(str: string): string {
   try {
     const binary = atob(str.replace(/\s/g, ""));
-    return decodeURIComponent(
-      binary.split("").map((c) => "%" + c.charCodeAt(0).toString(16).padStart(2, "0")).join("")
-    );
+    try {
+      return decodeURIComponent(
+        binary.split("").map((c) => "%" + c.charCodeAt(0).toString(16).padStart(2, "0")).join("")
+      );
+    } catch {
+      return binary;
+    }
   } catch {
-    return atob(str.replace(/\s/g, ""));
+    return "";
   }
 }
 
@@ -119,8 +153,20 @@ function parsePartHeaders(headerStr: string): Record<string, string> {
   return map;
 }
 
-function parseMimeParts(body: string, boundary: string, attachments: Attachment[], textRef: { text: string; html: string }) {
-  const parts = body.split(new RegExp(`--${escapeRegex(boundary)}(?:--)?`));
+function parseMimeParts(
+  body: string,
+  boundary: string,
+  attachments: Attachment[],
+  textRef: { text: string; html: string },
+  depth = 0
+) {
+  // Hostile senders can nest multiparts (or create thousands of parts) to burn CPU.
+  if (depth > LIMITS.MAX_MIME_DEPTH) return;
+
+  const parts = body
+    .split(new RegExp(`--${escapeRegex(boundary)}(?:--)?`))
+    .slice(0, LIMITS.MAX_MIME_PARTS);
+
   for (const part of parts) {
     const splitIdx = part.indexOf("\n\n");
     if (splitIdx < 0) continue;
@@ -135,28 +181,32 @@ function parseMimeParts(body: string, boundary: string, attachments: Attachment[
     // Check for nested multipart
     const nestedBoundary = ct.match(/boundary="?([^";\s]+)"?/i);
     if (nestedBoundary) {
-      parseMimeParts(partBody, nestedBoundary[1], attachments, textRef);
+      parseMimeParts(partBody, nestedBoundary[1], attachments, textRef, depth + 1);
       continue;
     }
 
     // Check if it's an attachment
     const filenameMatch = (disposition + " " + ct).match(/(?:file)?name="?([^";\n]+)"?/i);
 
-const isAttachment =
-  disposition.includes("attachment") ||
-  disposition.includes("inline") ||
-  filenameMatch !== null;
-  
-  
-   if (isAttachment && filenameMatch) {
-   
-      const filename = decodeHeaderWord(filenameMatch ? filenameMatch[1].trim() : "attachment");
+    const isAttachment =
+      disposition.includes("attachment") ||
+      disposition.includes("inline") ||
+      filenameMatch !== null;
+
+    if (isAttachment && filenameMatch) {
+      // Skip (don't even decode) anything past the attachment limit.
+      if (attachments.length >= LIMITS.MAX_ATTACHMENTS) continue;
+
+      const filename = decodeHeaderWord(filenameMatch[1].trim());
       let base64Data: string;
       if (encoding === "base64") {
         base64Data = partBody.replace(/\s/g, "");
       } else {
-        base64Data = btoa(partBody);
+        base64Data = toBase64(partBody);
       }
+      // Too large to store in a D1 row: drop it instead of failing the whole email.
+      if (base64Data.length > LIMITS.MAX_ATTACHMENT_B64_CHARS) continue;
+
       const size = Math.ceil(base64Data.length * 3 / 4);
       attachments.push({
         filename,
@@ -253,62 +303,86 @@ function parseRawEmail(raw: string): ParsedEmail {
   };
 }
 
+// ---------------------------------------------------------------------------
+// Worker entry points
+// ---------------------------------------------------------------------------
+
 export default {
   async fetch(request: Request, env: Env, ctx: ExecutionContext) {
     try {
       const url = new URL(request.url);
       const path = url.pathname;
+      const isAdminPath = path.startsWith("/api/admin/");
+
+      // The admin API never sends CORS headers (it is same-origin only).
+      const cors = isAdminPath ? {} : buildCorsHeaders(request, env.ALLOWED_ORIGINS);
+      const send = (data: unknown, status = 200, extra: Record<string, string> = {}) =>
+        jsonResponse(data, status, { ...cors, ...extra });
 
       if (request.method === "OPTIONS") {
-        return new Response(null, { headers: corsHeaders });
+        return new Response(null, { status: 204, headers: cors });
       }
 
-
       // ---- Admin API (requires ADMIN_PASSWORD secret) ----
-      if (path.startsWith("/api/admin/")) {
-        if (!(await isAdmin(request, env))) return adminJson({ error: "Unauthorized" }, 401);
+      if (isAdminPath) {
+        const ip = request.headers.get("CF-Connecting-IP") || "unknown";
+
+        // Lockout is checked BEFORE the password, so a locked IP can't keep guessing.
+        if (await isLockedOut(env, ip)) {
+          return send({ error: "Too many failed attempts. Try again later." }, 429, { "Retry-After": "900" });
+        }
+        if (!(await isAdmin(request, env))) {
+          await recordFailure(env, ip);
+          return send({ error: "Unauthorized" }, 401);
+        }
 
         // GET /api/admin/emails?q=&limit=&offset=
         if (path === "/api/admin/emails" && request.method === "GET") {
           const q = (url.searchParams.get("q") || "").trim().slice(0, 100);
           const limit = Math.min(Math.max(parseInt(url.searchParams.get("limit") || "50", 10) || 50, 1), 100);
           const offset = Math.max(parseInt(url.searchParams.get("offset") || "0", 10) || 0, 0);
-          const like = `%${q}%`;
-          const where = q ? "WHERE to_address LIKE ?1 OR from_address LIKE ?1 OR from_name LIKE ?1 OR subject LIKE ?1 OR preview LIKE ?1" : "";
+          const like = `%${q.replace(/[\\%_]/g, "\\$&")}%`;
+          const where = q
+            ? "WHERE to_address LIKE ?1 ESCAPE '\\' OR from_address LIKE ?1 ESCAPE '\\' OR from_name LIKE ?1 ESCAPE '\\' OR subject LIKE ?1 ESCAPE '\\' OR preview LIKE ?1 ESCAPE '\\'"
+            : "";
           const countStmt = q
             ? env.DB.prepare(`SELECT COUNT(*) AS c FROM emails ${where}`).bind(like)
             : env.DB.prepare("SELECT COUNT(*) AS c FROM emails");
           const listSql = `SELECT id, to_address, from_address, from_name, subject, preview, has_attachments, received_at FROM emails ${where} ORDER BY received_at DESC LIMIT ${limit} OFFSET ${offset}`;
           const listStmt = q ? env.DB.prepare(listSql).bind(like) : env.DB.prepare(listSql);
           const [count, list] = await Promise.all([countStmt.first<{ c: number }>(), listStmt.all()]);
-          return adminJson({ total: count?.c ?? 0, items: list.results || [] });
+          return send({ total: count?.c ?? 0, items: list.results || [] });
         }
 
-        // GET /api/admin/emails/:id
         const m = path.match(/^\/api\/admin\/emails\/([^/]+)$/);
-        if (m && request.method === "GET") {
-          const email = await env.DB.prepare("SELECT * FROM emails WHERE id = ?").bind(m[1]).first();
-          if (!email) return adminJson({ error: "Not found" }, 404);
-          const { results: attachments } = await env.DB.prepare(
-            "SELECT id, filename, content_type, size FROM attachments WHERE email_id = ?"
-          ).bind(m[1]).all();
-          return adminJson({ ...email, attachments: attachments || [] });
+        if (m && isUuid(m[1])) {
+          // GET /api/admin/emails/:id
+          if (request.method === "GET") {
+            const email = await env.DB.prepare("SELECT * FROM emails WHERE id = ?").bind(m[1]).first();
+            if (!email) return send({ error: "Not found" }, 404);
+            const { results: attachments } = await env.DB.prepare(
+              "SELECT id, filename, content_type, size FROM attachments WHERE email_id = ?"
+            ).bind(m[1]).all();
+            return send({ ...email, attachments: attachments || [] });
+          }
+
+          // DELETE /api/admin/emails/:id
+          if (request.method === "DELETE") {
+            await env.DB.batch([
+              env.DB.prepare("DELETE FROM attachments WHERE email_id = ?").bind(m[1]),
+              env.DB.prepare("DELETE FROM emails WHERE id = ?").bind(m[1]),
+            ]);
+            return send({ ok: true });
+          }
         }
 
-        // DELETE /api/admin/emails/:id
-        if (m && request.method === "DELETE") {
-          await env.DB.prepare("DELETE FROM attachments WHERE email_id = ?").bind(m[1]).run();
-          await env.DB.prepare("DELETE FROM emails WHERE id = ?").bind(m[1]).run();
-          return adminJson({ ok: true });
-        }
-
-        return adminJson({ error: "Not found" }, 404);
+        return send({ error: "Not found" }, 404);
       }
 
       // GET /api/messages?email=...
       if (path === "/api/messages" && request.method === "GET") {
-        const email = url.searchParams.get("email");
-        if (!email) return json({ error: "Missing email" }, 400);
+        const email = normalizeMailbox(url.searchParams.get("email"));
+        if (!email) return send({ error: "Invalid email" }, 400);
 
         const { results } = await env.DB.prepare(
           `SELECT id, to_address, from_address, from_name, subject, preview, has_attachments, is_read, received_at
@@ -317,80 +391,97 @@ export default {
            LIMIT 50`
         ).bind(email).all();
 
-        return json(results || []);
+        return send(results || []);
       }
 
       // DELETE /api/messages?email=...
       if (path === "/api/messages" && request.method === "DELETE") {
-        const email = url.searchParams.get("email");
-        if (!email) return json({ error: "Missing email" }, 400);
+        const email = normalizeMailbox(url.searchParams.get("email"));
+        if (!email) return send({ error: "Invalid email" }, 400);
 
         // Delete attachments first, then emails
-        await env.DB.prepare(
-          `DELETE FROM attachments WHERE email_id IN (SELECT id FROM emails WHERE to_address = ?)`
-        ).bind(email).run();
-        await env.DB.prepare(
-          `DELETE FROM emails WHERE to_address = ?`
-        ).bind(email).run();
+        await env.DB.batch([
+          env.DB.prepare(
+            `DELETE FROM attachments WHERE email_id IN (SELECT id FROM emails WHERE to_address = ?)`
+          ).bind(email),
+          env.DB.prepare(`DELETE FROM emails WHERE to_address = ?`).bind(email),
+        ]);
 
-        return json({ ok: true });
+        return send({ ok: true });
       }
 
-      // GET /api/messages/:id
-      if (path.startsWith("/api/messages/") && !path.includes("/attachments") && request.method === "GET") {
-        const id = path.split("/api/messages/")[1];
-        if (!id) return json({ error: "Missing id" }, 400);
+      // GET /api/messages/:id/attachments/:attachmentId?email=...
+      const attMatch = path.match(/^\/api\/messages\/([^/]+)\/attachments\/([^/]+)$/);
+      if (attMatch && request.method === "GET") {
+        const [, emailId, attachmentId] = attMatch;
+        const email = normalizeMailbox(url.searchParams.get("email"));
+        if (!isUuid(emailId) || !isUuid(attachmentId) || !email) return send({ error: "Invalid request" }, 400);
 
+        // Ownership check: the attachment must belong to a message in THIS mailbox.
+        const attachment = await env.DB.prepare(
+          `SELECT a.filename, a.content_base64
+           FROM attachments a JOIN emails e ON e.id = a.email_id
+           WHERE a.id = ? AND a.email_id = ? AND e.to_address = ?`
+        ).bind(attachmentId, emailId, email).first();
+
+        if (!attachment) return send({ error: "Not found" }, 404);
+        return attachmentResponse(attachment, cors);
+      }
+
+      // GET /api/messages/:id?email=...
+      const msgMatch = path.match(/^\/api\/messages\/([^/]+)$/);
+      if (msgMatch && request.method === "GET") {
+        const id = msgMatch[1];
+        const email = normalizeMailbox(url.searchParams.get("email"));
+        if (!isUuid(id) || !email) return send({ error: "Invalid request" }, 400);
+
+        // Ownership check: only return the message if it belongs to this mailbox.
         const result = await env.DB.prepare(
-          `SELECT * FROM emails WHERE id = ?`
-        ).bind(id).first();
+          `SELECT * FROM emails WHERE id = ? AND to_address = ?`
+        ).bind(id, email).first();
 
-        if (!result) return json({ error: "Not found" }, 404);
+        if (!result) return send({ error: "Not found" }, 404);
+
+        await env.DB.prepare(`UPDATE emails SET is_read = 1 WHERE id = ?`).bind(id).run();
 
         // Also fetch attachments metadata (without content)
         const { results: attachments } = await env.DB.prepare(
           `SELECT id, filename, content_type, size FROM attachments WHERE email_id = ?`
         ).bind(id).all();
 
-        return json({ ...result, attachments: attachments || [] });
+        return send({ ...result, attachments: attachments || [] });
       }
 
-      // GET /api/messages/:id/attachments/:attachmentId
-      if (path.match(/^\/api\/messages\/[^/]+\/attachments\/[^/]+$/) && request.method === "GET") {
-        const parts = path.split("/");
-        const attachmentId = parts[parts.length - 1];
-
-        const attachment = await env.DB.prepare(
-          `SELECT * FROM attachments WHERE id = ?`
-        ).bind(attachmentId).first();
-
-        if (!attachment) return json({ error: "Not found" }, 404);
-
-        const binary = Uint8Array.from(atob(attachment.content_base64 as string), c => c.charCodeAt(0));
-        return new Response(binary, {
-          headers: {
-            "Content-Type": attachment.content_type as string,
-            "Content-Disposition": `attachment; filename="${attachment.filename}"`,
-            ...corsHeaders,
-          },
-        });
-      }
-
-      return json({ error: "Not found" }, 404);
+      return send({ error: "Not found" }, 404);
 
     } catch (err) {
       console.error("Fetch handler error:", err);
-      return json({ error: "Internal error" }, 500);
+      return jsonResponse({ error: "Internal error" }, 500);
     }
   },
 
   async email(message: ForwardableEmailMessage, env: Env, ctx: ExecutionContext) {
     try {
-      const to = message.to;
+      const to = (message.to || "").trim().toLowerCase();
       const domain = to.split("@")[1];
 
-      if (!ALLOWED_DOMAINS.includes(domain)) {
+      if (!to || to.length > 254 || !domain || !ALLOWED_DOMAINS.includes(domain)) {
         message.setReject("Unknown domain");
+        return;
+      }
+
+      // Refuse oversized mail before reading it into memory.
+      if (message.rawSize > LIMITS.MAX_RAW_EMAIL_BYTES) {
+        message.setReject("Message too large");
+        return;
+      }
+
+      // Stop one mailbox from being flooded (protects the D1 quota).
+      const existing = await env.DB.prepare("SELECT COUNT(*) AS c FROM emails WHERE to_address = ?")
+        .bind(to)
+        .first<{ c: number }>();
+      if ((existing?.c ?? 0) >= LIMITS.MAX_EMAILS_PER_ADDRESS) {
+        message.setReject("Mailbox full");
         return;
       }
 
@@ -407,22 +498,26 @@ export default {
       `).bind(
         id,
         to,
-        parsed.fromAddress || message.from,
-        parsed.fromName,
-        parsed.subject || (message.headers.get("subject") || ""),
+        (parsed.fromAddress || message.from || "").slice(0, 320),
+        parsed.fromName.slice(0, 200),
+        (parsed.subject || message.headers.get("subject") || "").slice(0, 500),
         parsed.preview,
-        parsed.textContent,
-        parsed.htmlContent,
+        parsed.textContent.slice(0, LIMITS.MAX_TEXT_CHARS),
+        parsed.htmlContent.slice(0, LIMITS.MAX_HTML_CHARS),
         hasAttachments
       ).run();
 
-      // Save attachments
+      // Save attachments (one failing attachment must not lose the others)
       for (const att of parsed.attachments) {
-        const attId = crypto.randomUUID();
-        await env.DB.prepare(`
-          INSERT INTO attachments (id, email_id, filename, content_type, size, content_base64)
-          VALUES (?, ?, ?, ?, ?, ?)
-        `).bind(attId, id, att.filename, att.contentType, att.size, att.contentBase64).run();
+        try {
+          const attId = crypto.randomUUID();
+          await env.DB.prepare(`
+            INSERT INTO attachments (id, email_id, filename, content_type, size, content_base64)
+            VALUES (?, ?, ?, ?, ?, ?)
+          `).bind(attId, id, att.filename.slice(0, 255), att.contentType.slice(0, 100), att.size, att.contentBase64).run();
+        } catch (e) {
+          console.error("Attachment insert error:", e);
+        }
       }
 
     } catch (e) {
@@ -440,6 +535,13 @@ export default {
       ).run();
     } catch (e) {
       console.error("Cleanup error:", e);
+    }
+
+    // Housekeeping for the admin lockout table (it may not exist yet; that's fine).
+    try {
+      await env.DB.prepare("DELETE FROM admin_failures WHERE at < ?").bind(Date.now() - ADMIN_WINDOW_MS).run();
+    } catch {
+      /* table not created yet */
     }
   }
 

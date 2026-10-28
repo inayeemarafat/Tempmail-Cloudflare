@@ -1,46 +1,45 @@
-// GET /api/messages/:id/attachments/:attachmentId
+// GET /api/messages/:id/attachments/:attachmentId?email=...
+import {
+  attachmentResponse,
+  corsHeaders as buildCors,
+  isUuid,
+  jsonResponse,
+  normalizeMailbox,
+} from "../../../../../shared/security";
+
 interface Env {
   DB: D1Database;
+  /** Optional, comma separated list of origins allowed to call this API (CORS). */
+  ALLOWED_ORIGINS?: string;
 }
-
-const corsHeaders = {
-  "Access-Control-Allow-Origin": "*",
-  "Access-Control-Allow-Methods": "GET, OPTIONS",
-  "Access-Control-Allow-Headers": "Content-Type",
-};
 
 export const onRequest: PagesFunction<Env> = async (context) => {
   const { request, env, params } = context;
+  const cors = buildCors(request, env.ALLOWED_ORIGINS);
 
   if (request.method === "OPTIONS") {
-    return new Response(null, { headers: corsHeaders });
+    return new Response(null, { status: 204, headers: cors });
+  }
+  if (request.method !== "GET") {
+    return jsonResponse({ error: "Method not allowed" }, 405, cors);
   }
 
+  const emailId = params.id as string;
   const attachmentId = params.attachmentId as string;
-  if (!attachmentId) {
-    return new Response(JSON.stringify({ error: "Missing attachment ID" }), {
-      status: 400,
-      headers: { "Content-Type": "application/json", ...corsHeaders },
-    });
+  const email = normalizeMailbox(new URL(request.url).searchParams.get("email"));
+
+  if (!isUuid(emailId) || !isUuid(attachmentId) || !email) {
+    return jsonResponse({ error: "Invalid request" }, 400, cors);
   }
 
+  // Ownership check: the attachment must belong to a message in THIS mailbox.
   const attachment = await env.DB.prepare(
-    "SELECT * FROM attachments WHERE id = ?"
-  ).bind(attachmentId).first();
+    `SELECT a.filename, a.content_base64
+     FROM attachments a JOIN emails e ON e.id = a.email_id
+     WHERE a.id = ? AND a.email_id = ? AND e.to_address = ?`
+  ).bind(attachmentId, emailId, email).first();
 
-  if (!attachment) {
-    return new Response(JSON.stringify({ error: "Not found" }), {
-      status: 404,
-      headers: { "Content-Type": "application/json", ...corsHeaders },
-    });
-  }
+  if (!attachment) return jsonResponse({ error: "Not found" }, 404, cors);
 
-  const binary = Uint8Array.from(atob(attachment.content_base64 as string), c => c.charCodeAt(0));
-  return new Response(binary, {
-    headers: {
-      "Content-Type": attachment.content_type as string,
-      "Content-Disposition": `attachment; filename="${attachment.filename}"`,
-      ...corsHeaders,
-    },
-  });
+  return attachmentResponse(attachment, cors);
 };
