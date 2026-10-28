@@ -1,1 +1,14 @@
 *.py
+
+# Secrets / local config: never commit these (ADMIN_PASSWORD etc.)
+.env
+.env.local
+.env.*.local
+.dev.vars
+.dev.vars.*
+
+# Build output & tooling
+node_modules/
+dist/
+.wrangler/
+*.log

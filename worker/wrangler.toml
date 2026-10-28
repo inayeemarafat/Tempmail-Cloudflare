@@ -10,7 +10,7 @@ database_name = "tempmail-db"
 database_id = "0336632c-e4d8-4947-b01b-0df3e9aa5d5b"
 
 [triggers]
-crons = ["0 * * * *"]
+crons = ["*/15 * * * *"]
 
 [email]
 
@@ -23,7 +23,9 @@ head_sampling_rate = 1
 enabled = true
 head_sampling_rate = 1
 persist = true
-invocation_logs = true
+# Invocation logs contain request URLs (which include mailbox addresses), so keep them off:
+# otherwise addresses would be retained in logs long after the emails are deleted.
+invocation_logs = false
 
 [observability.traces]
 enabled = false

@@ -1,0 +1,16 @@
+# Security headers for the static site (Cloudflare Pages / Workers static assets).
+# API responses get their own headers from the Worker / Pages Functions code.
+#
+# connect-src allows https: because VITE_API_URL may point at a different origin
+# (your Pages / Worker URL). If you only use the same origin, tighten it to 'self'.
+/*
+  X-Content-Type-Options: nosniff
+  X-Frame-Options: DENY
+  Referrer-Policy: strict-origin-when-cross-origin
+  Permissions-Policy: camera=(), microphone=(), geolocation=(), payment=(), usb=()
+  Strict-Transport-Security: max-age=31536000
+  Content-Security-Policy: default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com data:; img-src 'self' data: blob: https:; media-src 'self'; connect-src 'self' https:; frame-src blob:; object-src 'none'; base-uri 'self'; form-action 'self'; frame-ancestors 'none'
+
+# Never cache the admin page
+/admin
+  Cache-Control: no-store

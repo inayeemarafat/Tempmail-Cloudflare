@@ -45,8 +45,8 @@ function getInitial(name: string) {
   return (name || "?").trim().charAt(0).toUpperCase();
 }
 
-const AttachmentItem = ({ attachment, emailId }: { attachment: EmailAttachment; emailId: string }) => {
-  const downloadUrl = getAttachmentUrl(emailId, attachment.id);
+const AttachmentItem = ({ attachment, emailId, mailbox }: { attachment: EmailAttachment; emailId: string; mailbox: string }) => {
+  const downloadUrl = getAttachmentUrl(emailId, attachment.id, mailbox);
   return (
     <a
       href={downloadUrl}
@@ -68,7 +68,10 @@ const AttachmentItem = ({ attachment, emailId }: { attachment: EmailAttachment; 
 
 const EmailViewer = ({ message, onBack }: EmailViewerProps) => {
   const renderHtml = (html: string) => {
-    const injected = `<!doctype html><html><head><base target="_blank"><meta charset="utf-8"><style>body{margin:0;font-family:system-ui,-apple-system,sans-serif;word-wrap:break-word}img{max-width:100%;height:auto}</style></head><body>${html}</body></html>`;
+    // Second layer on top of the iframe sandbox: the email can't run scripts, load frames/objects,
+    // open connections or submit forms, even if the sandbox attribute were ever loosened.
+    const csp = "default-src 'none'; img-src https: data:; style-src 'unsafe-inline'; font-src https: data:; form-action 'none'";
+    const injected = `<!doctype html><html><head><meta http-equiv="Content-Security-Policy" content="${csp}"><base target="_blank"><meta charset="utf-8"><style>body{margin:0;font-family:system-ui,-apple-system,sans-serif;word-wrap:break-word}img{max-width:100%;height:auto}</style></head><body>${html}</body></html>`;
     const blob = new Blob([injected], { type: "text/html" });
     const url = URL.createObjectURL(blob);
     return (
@@ -161,7 +164,7 @@ const EmailViewer = ({ message, onBack }: EmailViewerProps) => {
               </div>
               <div className="grid gap-2">
                 {message.attachments!.map((att) => (
-                  <AttachmentItem key={att.id} attachment={att} emailId={message.id} />
+                  <AttachmentItem key={att.id} attachment={att} emailId={message.id} mailbox={message.to_address} />
                 ))}
               </div>
             </div>

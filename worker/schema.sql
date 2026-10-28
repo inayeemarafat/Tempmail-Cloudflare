@@ -26,3 +26,11 @@ CREATE TABLE IF NOT EXISTS attachments (
 CREATE INDEX IF NOT EXISTS idx_emails_to_address ON emails(to_address);
 CREATE INDEX IF NOT EXISTS idx_emails_received_at ON emails(received_at DESC);
 CREATE INDEX IF NOT EXISTS idx_attachments_email_id ON attachments(email_id);
+
+-- Failed admin logins (used for per-IP lockout). The Worker also creates this lazily.
+CREATE TABLE IF NOT EXISTS admin_failures (
+  ip TEXT NOT NULL,
+  at INTEGER NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_admin_failures_ip_at ON admin_failures(ip, at);
