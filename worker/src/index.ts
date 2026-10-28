@@ -1,5 +1,6 @@
 export interface Env {
   DB: D1Database;
+  ADMIN_PASSWORD?: string;
 }
 
 const ALLOWED_DOMAINS = ["aflii.club", "daboss.website", "gabrielgil.online", "rehbir.online", "solomusic.net", "technostarworld.com", "waverecords.xyz"];
@@ -7,7 +8,7 @@ const ALLOWED_DOMAINS = ["aflii.club", "daboss.website", "gabrielgil.online", "r
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
   "Access-Control-Allow-Methods": "GET, POST, DELETE, OPTIONS",
-  "Access-Control-Allow-Headers": "Content-Type",
+  "Access-Control-Allow-Headers": "Content-Type, Authorization",
 };
 
 function json(data: unknown, status = 200) {
@@ -15,6 +16,31 @@ function json(data: unknown, status = 200) {
     status,
     headers: { "Content-Type": "application/json", ...corsHeaders },
   });
+}
+
+
+function adminJson(data: unknown, status = 200) {
+  return new Response(JSON.stringify(data), {
+    status,
+    headers: { "Content-Type": "application/json", "Cache-Control": "no-store", ...corsHeaders },
+  });
+}
+
+async function isAdmin(request: Request, env: Env): Promise<boolean> {
+  const expected = env.ADMIN_PASSWORD;
+  if (!expected) return false; // admin disabled until the secret is set
+  const header = request.headers.get("Authorization") || "";
+  const given = header.startsWith("Bearer ") ? header.slice(7) : "";
+  const enc = new TextEncoder();
+  const [a, b] = await Promise.all([
+    crypto.subtle.digest("SHA-256", enc.encode(given)),
+    crypto.subtle.digest("SHA-256", enc.encode(expected)),
+  ]);
+  const x = new Uint8Array(a);
+  const y = new Uint8Array(b);
+  let diff = 0;
+  for (let i = 0; i < x.length; i++) diff |= x[i] ^ y[i];
+  return diff === 0;
 }
 
 function decodeQuotedPrintable(str: string): string {
@@ -235,6 +261,48 @@ export default {
 
       if (request.method === "OPTIONS") {
         return new Response(null, { headers: corsHeaders });
+      }
+
+
+      // ---- Admin API (requires ADMIN_PASSWORD secret) ----
+      if (path.startsWith("/api/admin/")) {
+        if (!(await isAdmin(request, env))) return adminJson({ error: "Unauthorized" }, 401);
+
+        // GET /api/admin/emails?q=&limit=&offset=
+        if (path === "/api/admin/emails" && request.method === "GET") {
+          const q = (url.searchParams.get("q") || "").trim().slice(0, 100);
+          const limit = Math.min(Math.max(parseInt(url.searchParams.get("limit") || "50", 10) || 50, 1), 100);
+          const offset = Math.max(parseInt(url.searchParams.get("offset") || "0", 10) || 0, 0);
+          const like = `%${q}%`;
+          const where = q ? "WHERE to_address LIKE ?1 OR from_address LIKE ?1 OR from_name LIKE ?1 OR subject LIKE ?1 OR preview LIKE ?1" : "";
+          const countStmt = q
+            ? env.DB.prepare(`SELECT COUNT(*) AS c FROM emails ${where}`).bind(like)
+            : env.DB.prepare("SELECT COUNT(*) AS c FROM emails");
+          const listSql = `SELECT id, to_address, from_address, from_name, subject, preview, has_attachments, received_at FROM emails ${where} ORDER BY received_at DESC LIMIT ${limit} OFFSET ${offset}`;
+          const listStmt = q ? env.DB.prepare(listSql).bind(like) : env.DB.prepare(listSql);
+          const [count, list] = await Promise.all([countStmt.first<{ c: number }>(), listStmt.all()]);
+          return adminJson({ total: count?.c ?? 0, items: list.results || [] });
+        }
+
+        // GET /api/admin/emails/:id
+        const m = path.match(/^\/api\/admin\/emails\/([^/]+)$/);
+        if (m && request.method === "GET") {
+          const email = await env.DB.prepare("SELECT * FROM emails WHERE id = ?").bind(m[1]).first();
+          if (!email) return adminJson({ error: "Not found" }, 404);
+          const { results: attachments } = await env.DB.prepare(
+            "SELECT id, filename, content_type, size FROM attachments WHERE email_id = ?"
+          ).bind(m[1]).all();
+          return adminJson({ ...email, attachments: attachments || [] });
+        }
+
+        // DELETE /api/admin/emails/:id
+        if (m && request.method === "DELETE") {
+          await env.DB.prepare("DELETE FROM attachments WHERE email_id = ?").bind(m[1]).run();
+          await env.DB.prepare("DELETE FROM emails WHERE id = ?").bind(m[1]).run();
+          return adminJson({ ok: true });
+        }
+
+        return adminJson({ error: "Not found" }, 404);
       }
 
       // GET /api/messages?email=...
