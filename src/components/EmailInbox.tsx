@@ -133,7 +133,7 @@ const EmailInbox = ({ messages, isRefreshing, onRefresh, onOpenMessage }: EmailI
                       <p className="text-xs text-muted-foreground truncate leading-relaxed">
                         {msg.preview}
                       </p>
-                      {msg.has_attachments && (
+                      {!!msg.has_attachments && (
                         <div className="flex items-center gap-1.5 mt-1.5">
                           <Paperclip className="w-3 h-3 text-primary/60" />
                           <span className="text-[10px] text-primary/70 font-medium">
