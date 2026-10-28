@@ -49,7 +49,7 @@ const Preloader = () => {
           className="text-center"
         >
           <h1 className="text-2xl font-bold font-display tracking-tight">
-            <span className="text-gradient-primary">AHC</span>{" "}
+            <span className="text-gradient-primary">Temp</span>{" "}
             <span className="text-foreground">Mail</span>
           </h1>
           <p className="text-[11px] text-muted-foreground mt-1 tracking-widest uppercase font-mono">

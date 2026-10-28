@@ -14,11 +14,11 @@ const TopBar = ({ subtitle, theme, onToggleTheme }: TopBarProps) => {
         {/* Left: Logo */}
         <div className="flex items-center gap-2.5">
           <div className="w-8 h-8 rounded-xl bg-gradient-to-br from-primary to-primary/70 flex items-center justify-center glow-primary">
-            <span className="text-primary-foreground text-xs font-bold font-display">A</span>
+            <span className="text-primary-foreground text-xs font-bold font-display">T</span>
           </div>
           <div className="flex flex-col leading-tight">
             <span className="font-display font-bold text-sm">
-              <span className="text-gradient-primary">AHC</span>{" "}
+              <span className="text-gradient-primary">Temp</span>{" "}
               <span className="text-foreground">Mail</span>
             </span>
             {subtitle && (

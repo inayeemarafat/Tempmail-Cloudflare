@@ -69,7 +69,7 @@ const PWAInstallBanner = () => {
       if (isIOS) {
         toast("Tap the Share icon, then 'Add to Home Screen' to install.", { duration: 5000 });
       } else {
-        toast("Open your browser menu and choose 'Install app' to install AHC Mail.", { duration: 5000 });
+        toast("Open your browser menu and choose 'Install app' to install Temp Mail.", { duration: 5000 });
       }
     }
   };
@@ -95,7 +95,7 @@ const PWAInstallBanner = () => {
         >
           <div
             role="dialog"
-            aria-label="Install AHC Mail"
+            aria-label="Install Temp Mail"
             className="pointer-events-auto mx-auto max-w-md rounded-2xl px-3 py-3 flex items-center gap-3 shadow-2xl backdrop-blur-xl border border-white/10"
             style={{
               background:
@@ -106,7 +106,7 @@ const PWAInstallBanner = () => {
             <div className="relative shrink-0">
               <img
                 src="/favicon.png"
-                alt="AHC Mail"
+                alt="Temp Mail"
                 className="w-12 h-12 rounded-xl object-cover bg-white/10 ring-1 ring-white/20"
               />
               <button
@@ -121,7 +121,7 @@ const PWAInstallBanner = () => {
             {/* Center: text */}
             <div className="flex-1 min-w-0 leading-tight">
               <p className="font-display font-bold text-white text-sm tracking-wide">
-                AHC MAIL
+                TEMP MAIL
               </p>
               <p className="text-[11px] text-white/80">Download Now!</p>
             </div>

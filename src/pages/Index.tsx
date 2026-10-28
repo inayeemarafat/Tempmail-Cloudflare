@@ -191,7 +191,7 @@ const Index = () => {
         {/* Mobile-app container: full width on mobile, framed on desktop */}
         <div className="w-full max-w-md relative min-h-screen bg-background md:border-x md:border-border flex flex-col">
           <TopBar
-            title="AHC Mail"
+            title="Temp Mail"
             subtitle={getSubtitle()}
             theme={theme}
             onToggleTheme={toggleTheme}

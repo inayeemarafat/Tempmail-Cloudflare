@@ -1,7 +1,7 @@
 {
-  "name": "AHC Mail",
-  "short_name": "AHC Mail",
-  "description": "AHC Mail (AHCM) — Free disposable email addresses instantly. Protect your privacy with secure temporary inboxes.",
+  "name": "Temp Mail",
+  "short_name": "Temp Mail",
+  "description": "Temp Mail — Free disposable email addresses instantly. Protect your privacy with secure temporary inboxes.",
   "start_url": "/",
   "scope": "/",
   "display": "standalone",

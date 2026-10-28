@@ -160,7 +160,7 @@ const SettingsView = ({ theme, onToggleTheme, onDelete }: SettingsViewProps) => 
 >
   <p className="text-[11px] text-muted-foreground/60 font-mono">
     <a href="/" className="hover:underline">
-      AHC MAIL
+      TEMP MAIL
     </a>{" "}
     |{" "}
     <a
