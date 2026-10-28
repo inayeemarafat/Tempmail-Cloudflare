@@ -1,4 +1,4 @@
-name = "ahcm-api"
+name = "tempmail-api"
 main = "src/index.ts"
 compatibility_date = "2024-01-01"
 workers_dev = true
@@ -6,8 +6,8 @@ compatibility_flags = ["nodejs_compat"]
 
 [[d1_databases]]
 binding = "DB"
-database_name = "ahcm-db"
-database_id = "6eae38d5-4526-4d7a-a8f0-94197c806d9b"
+database_name = "tempmail-db"
+database_id = "0336632c-e4d8-4947-b01b-0df3e9aa5d5b"
 
 [triggers]
 crons = ["0 * * * *"]
