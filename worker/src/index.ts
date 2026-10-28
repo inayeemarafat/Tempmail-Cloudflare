@@ -2,7 +2,7 @@ export interface Env {
   DB: D1Database;
 }
 
-const ALLOWED_DOMAINS = ["aflii.club", "daboss.website", "gabrielgil.online", "rehbir.online", "solomusic.net", "technostarworld.com", "waverecords.xyz", "myuniversity.eu.cc", "officials.eu.cc", "pornstar.eu.cc", "teachers.eu.cc", "webdeveloper.eu.cc"];
+const ALLOWED_DOMAINS = ["aflii.club", "daboss.website", "gabrielgil.online", "rehbir.online", "solomusic.net", "technostarworld.com", "waverecords.xyz"];
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
